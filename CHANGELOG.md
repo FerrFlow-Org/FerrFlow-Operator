@@ -4,6 +4,12 @@ All notable changes to `ferrvault-operator` will be documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/). Releases are cut automatically from conventional commits by [FerrFlow](https://ferrflow.com).
 
+## [5.2.9] - 2026-09-07
+
+### Bug Fixes
+
+- fix(operator): back off exponentially on 429 and fail liveness when the loop stalls (#258)
+
 ## [5.2.8] - 2026-09-06
 
 ### Bug Fixes
