@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -35,8 +36,17 @@ const connectionInUseRequeue = 30 * time.Second
 
 type FerrVaultConnectionReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
-	Broker *TokenBroker
+	Scheme    *runtime.Scheme
+	Broker    *TokenBroker
+	Heartbeat *Heartbeat
+
+	backoffOnce sync.Once
+	backoff     *rateLimitBackoff
+}
+
+func (r *FerrVaultConnectionReconciler) rateLimit() *rateLimitBackoff {
+	r.backoffOnce.Do(func() { r.backoff = newRateLimitBackoff() })
+	return r.backoff
 }
 
 // +kubebuilder:rbac:groups=ferrvault.com,resources=ferrvaultconnections,verbs=get;list;watch
@@ -44,11 +54,13 @@ type FerrVaultConnectionReconciler struct {
 
 func (r *FerrVaultConnectionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx).WithValues("ferrvaultconnection", req.NamespacedName)
+	defer func() { r.Heartbeat.Beat(time.Now()) }()
 
 	var conn fvv1alpha1.FerrVaultConnection
 	if err := r.Get(ctx, req.NamespacedName, &conn); err != nil {
 		if apierrors.IsNotFound(err) {
 			DeleteConnectionReady(req.Namespace, req.Name)
+			r.rateLimit().forget(req.NamespacedName)
 			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, fmt.Errorf("load FerrVaultConnection: %w", err)
@@ -82,10 +94,12 @@ func (r *FerrVaultConnectionReconciler) Reconcile(ctx context.Context, req ctrl.
 	// connexion en échec garde la cause de son échec. Seul l'horodatage du
 	// dernier contrôle serait trompeur, et il n'est pas touché non plus.
 	if ferrvault.IsRateLimited(probeErr) {
+		after := r.rateLimit().next(req.NamespacedName)
 		logger.Info("probe rate limited, condition left as-is",
-			"requeueAfter", rateLimitRequeue)
-		return ctrl.Result{RequeueAfter: rateLimitRequeue}, nil
+			"requeueAfter", after)
+		return ctrl.Result{RequeueAfter: after}, nil
 	}
+	r.rateLimit().forget(req.NamespacedName)
 
 	logger.Info("probe finished", "ready", status, "reason", reason)
 

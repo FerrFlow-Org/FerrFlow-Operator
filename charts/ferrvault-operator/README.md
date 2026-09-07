@@ -51,6 +51,7 @@ kubectl delete crd ferrvaultsecrets.ferrvault.com ferrvaultconnections.ferrvault
 | `leaderElection.id` | `ferrvault-operator.ferrvault.com` | Change to run multiple isolated instances in one cluster. |
 | `watchNamespace` | `""` (cluster-wide) | Single namespace scope when set. |
 | `defaultRefreshInterval` | `1h` | Fallback for `FerrVaultSecret.spec.refreshInterval`. |
+| `stallThreshold` | `15m` | Liveness fails when no reconcile completes for this long while FerrVault resources exist. Keep it above the 10m connection probe interval. |
 | `logLevel` | `info` | `debug`, `info`, `warn`, `error`. |
 | `extraArgs` | `[]` | Extra manager CLI flags. |
 | `metrics.enabled` | `true` | |
