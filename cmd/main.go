@@ -44,6 +44,7 @@ func main() {
 		leaderElectionID       string
 		defaultRefreshInterval time.Duration
 		watchNamespace         string
+		stallThreshold         time.Duration
 	)
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080",
@@ -59,6 +60,9 @@ func main() {
 		"Fallback refresh interval used when a FerrVaultSecret omits spec.refreshInterval.")
 	flag.StringVar(&watchNamespace, "watch-namespace", "",
 		"Restrict the controller to a single namespace. Empty means cluster-wide.")
+	flag.DurationVar(&stallThreshold, "stall-threshold", 15*time.Minute,
+		"Fail the liveness probe when no reconcile has completed for this long "+
+			"while FerrVault resources exist. Must stay above the connection probe interval.")
 
 	opts := zap.Options{Development: false}
 	opts.BindFlags(flag.CommandLine)
@@ -117,21 +121,24 @@ func main() {
 	}
 
 	broker := controller.NewTokenBroker(mgr.GetClient())
+	heartbeat := controller.NewHeartbeat(time.Now())
 
 	if err := (&controller.FerrVaultSecretReconciler{
 		Client:                 mgr.GetClient(),
 		Scheme:                 mgr.GetScheme(),
 		DefaultRefreshInterval: defaultRefreshInterval,
 		Broker:                 broker,
+		Heartbeat:              heartbeat,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "FerrVaultSecret")
 		os.Exit(1)
 	}
 
 	if err := (&controller.FerrVaultConnectionReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-		Broker: broker,
+		Client:    mgr.GetClient(),
+		Scheme:    mgr.GetScheme(),
+		Broker:    broker,
+		Heartbeat: heartbeat,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "FerrVaultConnection")
 		os.Exit(1)
@@ -139,6 +146,11 @@ func main() {
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		setupLog.Error(err, "unable to set up health check")
+		os.Exit(1)
+	}
+	if err := mgr.AddHealthzCheck("reconcile-progress",
+		controller.StallChecker(mgr.GetClient(), heartbeat, stallThreshold)); err != nil {
+		setupLog.Error(err, "unable to set up stall check")
 		os.Exit(1)
 	}
 	if err := mgr.AddReadyzCheck("readyz", healthz.Ping); err != nil {
@@ -149,6 +161,7 @@ func main() {
 	setupLog.Info("starting manager",
 		"watchNamespace", fmtNs(watchNamespace),
 		"defaultRefreshInterval", defaultRefreshInterval,
+		"stallThreshold", stallThreshold,
 	)
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
 		setupLog.Error(err, "problem running manager")
